@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react"
-import { enviarEstadoLuzSmart } from "./lib/luzsmartSync";
 import { supabase } from "./lib/supabaseClient";
 import {
   AreaChart,
@@ -242,7 +241,7 @@ export default function App() {
   const [pirUntil, setPirUntil] = useState<number[]>(() => posteDefinitions.map(() => 0))
   const [now, setNow] = useState(() => Date.now())
   const [supabaseConnected, setSupabaseConnected] = useState(false);
-  const [initialStateLoaded, setInitialStateLoaded] = useState(false);
+  const [supabasePoleIntensities, setSupabasePoleIntensities] = useState<number[] | null>(null);
 useEffect(() => {
   let mounted = true;
 
@@ -272,8 +271,15 @@ useEffect(() => {
       );
     }
 
+    if (Array.isArray(data.pole_intensities) && data.pole_intensities.length === 6) {
+      setSupabasePoleIntensities(
+        data.pole_intensities.map((value: number) =>
+          Math.max(0, Math.min(100, Number(value) || 0))
+        )
+      );
+    }
+
     setSupabaseConnected(true);
-    setInitialStateLoaded(true);
   }
 
   loadState();
@@ -292,6 +298,7 @@ useEffect(() => {
         const data = payload.new as {
           ldr_value?: number;
           pir_states?: boolean[];
+          pole_intensities?: number[];
         };
 
         if (!mounted) return;
@@ -304,6 +311,14 @@ useEffect(() => {
           setPirUntil(
             data.pir_states.map((active) =>
               active ? Date.now() + 10_000 : 0
+            )
+          );
+        }
+
+        if (Array.isArray(data.pole_intensities) && data.pole_intensities.length === 6) {
+          setSupabasePoleIntensities(
+            data.pole_intensities.map((value) =>
+              Math.max(0, Math.min(100, Number(value) || 0))
             )
           );
         }
@@ -328,61 +343,33 @@ useEffect(() => {
   }, [])
 
  const isDay = ldrValue >= 1800;
- const activePirs = pirUntil.map((expiry) => pirMode && expiry > now);
-
-const intensitiesForSync = posteDefinitions.map((_, index) => {
-  const neighbourActive =
-    activePirs[index - 1] || activePirs[index + 1];
-
-  if (!autoMode || isDay) return 0;
-  if (activePirs[index]) return 100;
-  if (neighbourActive) return 60;
-  return 30;
-});
-
-useEffect(() => {
-  if (!initialStateLoaded) return;
-
-  async function syncState() {
-    try {
-      await enviarEstadoLuzSmart({
-        ldrValue,
-        pirStates: activePirs,
-        poleIntensities: intensitiesForSync,
-      });
-    } catch (error) {
-      console.error("Falha ao sincronizar LuzSmart:", error);
-    }
-  }
-
-  void syncState();
-}, [
-  initialStateLoaded,
-  ldrValue,
-  autoMode,
-  pirMode,
-  activePirs.join(","),
-]);
+ const activePirs = pirUntil.map((expiry) => expiry > now);
 
   const postes: Poste[] = posteDefinitions.map((definition, index) => {
-  const neighbourActive = activePirs[index - 1] || activePirs[index + 1];
+    const neighbourActive = activePirs[index - 1] || activePirs[index + 1];
 
-  const intensidade = !autoMode || isDay
-    ? 0
-    : activePirs[index]
-      ? 100
-      : neighbourActive
-        ? 60
-        : 30;
+    const localIntensity = !autoMode || isDay
+      ? 0
+      : activePirs[index]
+        ? 100
+        : neighbourActive
+          ? 60
+          : 30;
 
-  return {
-    ...definition,
-    aceso: intensidade > 0,
-    intensidade,
-    pir: activePirs[index],
-    ultima: activePirs[index] ? "movimento agora" : "valor simulado",
-  };
-});
+    const intensidade = supabasePoleIntensities !== null
+      ? (supabasePoleIntensities[index] ?? 0)
+      : localIntensity;
+
+    return {
+      ...definition,
+      aceso: intensidade > 0,
+      intensidade,
+      pir: activePirs[index],
+      ultima: supabasePoleIntensities !== null
+        ? (activePirs[index] ? "movimento detetado" : "atualizado via Supabase")
+        : (activePirs[index] ? "movimento agora" : "valor simulado"),
+    };
+  });
 
 const selectedPoste = postes.find((poste) => poste.id === selectedPosteId) ?? null;
   const totalPostes = postes.length
@@ -813,10 +800,14 @@ const selectedPoste = postes.find((poste) => poste.id === selectedPosteId) ?? nu
         <div className="system-status" style={{ padding: "14px 12px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
           <div style={{ borderRadius: 10, padding: "10px 14px", background: "rgba(245,166,35,0.07)", border: "1px solid rgba(245,166,35,0.15)" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#f5a623", boxShadow: "0 0 6px rgba(245,166,35,0.5)" }} />
-              <span style={{ fontSize: 11, fontWeight: 500, color: "#f5a623" }}>Modo demonstração</span>
+              <div style={{ width: 7, height: 7, borderRadius: "50%", background: supabaseConnected ? "#22c55e" : "#f5a623", boxShadow: supabaseConnected ? "0 0 6px rgba(34,197,94,0.5)" : "0 0 6px rgba(245,166,35,0.5)" }} />
+              <span style={{ fontSize: 11, fontWeight: 500, color: supabaseConnected ? "#22c55e" : "#f5a623" }}>
+                {supabaseConnected ? "Supabase conectado" : "Aguardando Supabase"}
+              </span>
             </div>
-            <p style={{ fontSize: 11, color: "#4a5a7a", marginTop: 4 }}>À espera de ligação ao ESP32</p>
+            <p style={{ fontSize: 11, color: "#4a5a7a", marginTop: 4 }}>
+              {supabasePoleIntensities !== null ? "Dados recebidos do Supabase" : "Aguardando estado dos postes"}
+            </p>
           </div>
         </div>
       </aside>
